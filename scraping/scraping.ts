@@ -35,16 +35,14 @@ Scraper.with(async (scraper) => {
       .evaluate()
       .map((outcomes) => [...outcomes]);
 
-    // const earl = outcomes.map((outcome) => outcome.toEARL());
-    const filtered = outcomes.filter(
-      (outcome) => Outcome.isFailed(outcome) || Outcome.isInapplicable(outcome),
-    );
+    const filtered = outcomes.filter((outcome) => Outcome.isFailed(outcome));
 
     const earl = filtered.map((outcome) => outcome.toEARL());
 
     const { url } = input.response;
     const elementDescriptions = getElementDescriptions(input.document);
     const ruleCriteriaMap = buildRuleCriteriaMap(filtered);
+    const ruleLevelMap = buildRuleLevelMap(filtered);
 
     console.group(url.toString());
     logStats(outcomes);
@@ -66,7 +64,7 @@ Scraper.with(async (scraper) => {
     fs.writeFileSync(file, JSON.stringify(earl, null, 2));
     fs.writeFileSync(
       csvFile,
-      formatCsvReport(url.toString(), earl, elementDescriptions, ruleCriteriaMap),
+      formatCsvReport(url.toString(), earl, elementDescriptions, ruleCriteriaMap, ruleLevelMap),
     );
   }
 });
@@ -76,17 +74,25 @@ function formatCsvReport(
   assertions: Array<EarlAssertion>,
   elementDescriptions: Map<string, string>,
   ruleCriteriaMap: Map<string, string>,
+  ruleLevelMap: Map<string, string>,
 ): string {
   const header = [
     "page_url",
     "rule_id",
     "rule_url",
     "wcag_criteria",
+    "conformance_level",
     "outcome",
     "message",
     "element",
   ];
-  const rows = assertions.map((assertion) => {
+  const rows = assertions
+    .filter((assertion) => {
+      const ruleUrl = getNestedString(assertion, ["earl:test", "@id"]);
+
+      return (ruleCriteriaMap.get(ruleUrl) ?? "") !== "";
+    })
+    .map((assertion) => {
     const ruleUrl = getNestedString(assertion, ["earl:test", "@id"]);
     const outcome = getNestedString(assertion, ["earl:result", "earl:outcome", "@id"]);
     const message = getNestedString(assertion, ["earl:result", "earl:info"]);
@@ -97,6 +103,7 @@ function formatCsvReport(
       getRuleId(ruleUrl),
       ruleUrl,
       ruleCriteriaMap.get(ruleUrl) ?? "",
+      ruleLevelMap.get(ruleUrl) ?? "",
       stripEarlPrefix(outcome),
       message,
       elementDescriptions.get(pointer) ?? "",
@@ -121,6 +128,44 @@ function buildRuleCriteriaMap<I, T extends Hashable, Q extends Question.Metadata
         .join(", ");
 
       map.set(uri, criteria);
+    }
+  }
+
+  return map;
+}
+
+function buildRuleLevelMap<I, T extends Hashable, Q extends Question.Metadata>(
+  outcomes: Array<Outcome<I, T, Q>>,
+): Map<string, string> {
+  const isA = Conformance.isA();
+  const isAA = Conformance.isAA();
+  const isAAA = Conformance.isAAA();
+
+  const map = new Map<string, string>();
+
+  for (const outcome of outcomes) {
+    const uri = outcome.rule.uri;
+
+    if (!map.has(uri)) {
+      const levels = outcome.rule.requirements
+        .filter((req): req is Criterion => req instanceof Criterion)
+        .map((criterion) => {
+          if (isA(criterion)) return "A";
+          if (isAA(criterion)) return "AA";
+          if (isAAA(criterion)) return "AAA";
+          return "";
+        })
+        .filter((lvl) => lvl !== "");
+
+      const level = levels.includes("A")
+        ? "A"
+        : levels.includes("AA")
+          ? "AA"
+          : levels.includes("AAA")
+            ? "AAA"
+            : "BEST PRACTICE";
+
+      map.set(uri, level);
     }
   }
 
@@ -211,11 +256,6 @@ function logStats<I, T extends Hashable, Q extends Question.Metadata>(
   outcomes: Array<Outcome<I, T, Q>>,
 ): void {
   console.log(outcomes.filter(Outcome.isPassed).length, "passed outcomes");
-
   console.log(outcomes.filter(Outcome.isFailed).length, "failed outcomes");
-
-  console.log(
-    outcomes.filter(Outcome.isInapplicable).length,
-    "inapplicable rules",
-  );
+  console.log(outcomes.filter(Outcome.isInapplicable).length, "inapplicable rules");
 }

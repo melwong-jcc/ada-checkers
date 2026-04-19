@@ -25,9 +25,10 @@ The CSV includes these columns:
 - `page_url`
 - `rule_id`
 - `rule_url`
+- `wcag_criteria`
+- `conformance`
 - `outcome`
 - `message`
-- `pointer`
 - `element`
 
 The `element` column summarizes the impacted DOM node using its tag, id/classes, and any available text, ARIA label, or href.
