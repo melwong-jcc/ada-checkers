@@ -18,12 +18,7 @@ const output = path.join(__dirname, "outcomes", "page.html.json");
 const local = url.pathToFileURL(input).toString();
 
 const page = process.argv?.[2] ?? local;
-const level = parseLevel(process.argv ?? []);
-const rules = filterRulesByLevel([...allRules], level);
-
-if (level !== undefined) {
-  console.log(`Filtering rules to WCAG conformance level ${level}:`, rules.length, "rules");
-}
+const rules = [...allRules];
 
 Scraper.with(async (scraper) => {
   const alfaPage = await scraper.scrape(page);
@@ -89,7 +84,6 @@ function formatCsvReport(
     "wcag_criteria",
     "outcome",
     "message",
-    "pointer",
     "element",
   ];
   const rows = assertions.map((assertion) => {
@@ -105,7 +99,6 @@ function formatCsvReport(
       ruleCriteriaMap.get(ruleUrl) ?? "",
       stripEarlPrefix(outcome),
       message,
-      pointer,
       elementDescriptions.get(pointer) ?? "",
     ];
   });
@@ -132,36 +125,6 @@ function buildRuleCriteriaMap<I, T extends Hashable, Q extends Question.Metadata
   }
 
   return map;
-}
-
-function parseLevel(argv: Array<string>): "A" | "AA" | "AAA" | undefined {
-  const flag = argv.find((arg) => /^--level=(A|AA|AAA)$/i.test(arg));
-
-  if (flag === undefined) {
-    return undefined;
-  }
-
-  const value = flag.split("=")[1].toUpperCase();
-
-  return value as "A" | "AA" | "AAA";
-}
-
-function filterRulesByLevel(
-  rulesList: Array<Rule<unknown, Hashable, Question.Metadata, Hashable>>,
-  level: "A" | "AA" | "AAA" | undefined,
-): Array<Rule<unknown, Hashable, Question.Metadata, Hashable>> {
-  if (level === undefined) {
-    return rulesList;
-  }
-
-  const isLevel =
-    level === "A" ? Conformance.isA() : level === "AA" ? Conformance.isAA() : Conformance.isAAA();
-
-  return rulesList.filter((rule) =>
-    rule.requirements.some(
-      (req: Requirement): boolean => req instanceof Criterion && isLevel(req as Criterion),
-    ),
-  );
 }
 
 function getElementDescriptions(document: Document): Map<string, string> {
