@@ -1,16 +1,13 @@
 # Scraping a page
 
 Install:
-1. nvm install 20
-2. nvm use 20
-3. npm install
-4. npm run build
+1. npm install
+1. npm run build (repeated if adjusting TypeScript source)
 
 Usage:
 
 ```shell
 npm test http://url/to/page
-npm test http://url/to/page --level=A
 ```
 
 If no URL is provided, the [fixture](fixtures/page.html) page will be tested instead.
@@ -29,6 +26,4 @@ The CSV includes these columns:
 - `conformance`
 - `outcome`
 - `message`
-- `element`
-
-The `element` column summarizes the impacted DOM node using its tag, id/classes, and any available text, ARIA label, or href.
+- `element` summarizes the impacted DOM node using its tag, id/classes, and any available text, ARIA label, or href

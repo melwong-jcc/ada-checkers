@@ -3,3 +3,4 @@ outcomes/*
 scraping.d.*
 scraping.js*
 tsconfig.tsbuildinfo
+.DS_Store

@@ -45,6 +45,7 @@ Scraper.with(async (scraper) => {
     const ruleLevelMap = buildRuleLevelMap(filtered);
 
     console.group(url.toString());
+    logWcagVersions(filtered);
     logStats(outcomes);
     console.groupEnd();
 
@@ -170,6 +171,28 @@ function buildRuleLevelMap<I, T extends Hashable, Q extends Question.Metadata>(
   }
 
   return map;
+}
+
+function logWcagVersions<I, T extends Hashable, Q extends Question.Metadata>(
+  outcomes: Array<Outcome<I, T, Q>>,
+): void {
+  const versions = new Set<string>();
+
+  for (const outcome of outcomes) {
+    for (const requirement of outcome.rule.requirements) {
+      if (!(requirement instanceof Criterion)) {
+        continue;
+      }
+
+      for (const version of requirement.versions) {
+        versions.add(version);
+      }
+    }
+  }
+
+  console.log(
+    `WCAG versions: ${versions.size === 0 ? "none" : [...versions].sort().map((version) => `WCAG ${version}`).join(", ")}`,
+  );
 }
 
 function getElementDescriptions(document: Document): Map<string, string> {
