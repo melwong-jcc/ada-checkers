@@ -6,7 +6,7 @@ import { Audit, Outcome, Question, Requirement, Rule } from "@siteimprove/alfa-a
 import { Document, Element, Query } from "@siteimprove/alfa-dom";
 import { Hashable } from "@siteimprove/alfa-hash";
 import { Scraper } from "@siteimprove/alfa-scraper";
-import allRules from "@siteimprove/alfa-rules";
+import Rules, { experimentalRules } from "@siteimprove/alfa-rules";
 import { Conformance, Criterion } from "@siteimprove/alfa-wcag";
 
 type EarlAssertion = Record<string, unknown>;
@@ -18,7 +18,10 @@ const output = path.join(__dirname, "outcomes", "page.html.json");
 const local = url.pathToFileURL(input).toString();
 
 const page = process.argv?.[2] ?? local;
-const rules = [...allRules];
+const rules: Array<Rule<any, any, Question.Metadata, any>> = [
+  ...Rules,
+  ...Object.values(experimentalRules),
+];
 
 Scraper.with(async (scraper) => {
   const alfaPage = await scraper.scrape(page);
@@ -35,7 +38,7 @@ Scraper.with(async (scraper) => {
       .evaluate()
       .map((outcomes) => [...outcomes]);
 
-    const filtered = outcomes.filter((outcome) => Outcome.isFailed(outcome));
+    const filtered = outcomes.filter((outcome) => Outcome.isFailed(outcome) || Outcome.isCantTell(outcome));
 
     const earl = filtered.map((outcome) => outcome.toEARL());
 
@@ -87,11 +90,22 @@ function formatCsvReport(
     "message",
     "element",
   ];
+  const levelOrder: Record<string, number> = { A: 0, AA: 1, AAA: 2, "BEST PRACTICE": 3 };
+
   const rows = assertions
     .filter((assertion) => {
       const ruleUrl = getNestedString(assertion, ["earl:test", "@id"]);
 
-      return (ruleCriteriaMap.get(ruleUrl) ?? "") !== "";
+      if ((ruleCriteriaMap.get(ruleUrl) ?? "") === "") return false;
+      if ((ruleLevelMap.get(ruleUrl) ?? "") === "") return false;
+
+      const outcome = getNestedString(assertion, ["earl:result", "earl:outcome", "@id"]);
+      if (stripEarlPrefix(outcome) === "cantTell") {
+        const pointer = getNestedString(assertion, ["earl:result", "earl:pointer", "ptr:expression"]);
+        if (!elementDescriptions.get(pointer)) return false;
+      }
+
+      return true;
     })
     .map((assertion) => {
     const ruleUrl = getNestedString(assertion, ["earl:test", "@id"]);
@@ -107,9 +121,9 @@ function formatCsvReport(
       ruleLevelMap.get(ruleUrl) ?? "",
       stripEarlPrefix(outcome),
       message,
-      elementDescriptions.get(pointer) ?? "",
+      elementDescriptions.get(pointer) ?? elementDescriptions.get(pointer.replace(/\/text\(\)\[\d+\]$/, "")) ?? "",
     ];
-  });
+  }).sort((a, b) => (levelOrder[a[4]] ?? 99) - (levelOrder[b[4]] ?? 99));
 
   return [header, ...rows].map((row) => row.map(escapeCsvCell).join(",")).join("\n") + "\n";
 }
@@ -164,7 +178,7 @@ function buildRuleLevelMap<I, T extends Hashable, Q extends Question.Metadata>(
           ? "AA"
           : levels.includes("AAA")
             ? "AAA"
-            : "BEST PRACTICE";
+            : "";
 
       map.set(uri, level);
     }
@@ -272,7 +286,8 @@ function stripEarlPrefix(value: string): string {
 }
 
 function escapeCsvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return `"${normalized.replace(/"/g, '""')}"`;
 }
 
 function logStats<I, T extends Hashable, Q extends Question.Metadata>(
@@ -280,5 +295,6 @@ function logStats<I, T extends Hashable, Q extends Question.Metadata>(
 ): void {
   console.log(outcomes.filter(Outcome.isPassed).length, "passed outcomes");
   console.log(outcomes.filter(Outcome.isFailed).length, "failed outcomes");
+  console.log(outcomes.filter(Outcome.isCantTell).length, "cannot tell outcomes");
   console.log(outcomes.filter(Outcome.isInapplicable).length, "inapplicable rules");
 }
