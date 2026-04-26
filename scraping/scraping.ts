@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as url from "node:url";
@@ -10,12 +12,40 @@ import Rules, { experimentalRules } from "@siteimprove/alfa-rules";
 import { Conformance, Criterion } from "@siteimprove/alfa-wcag";
 
 type EarlAssertion = Record<string, unknown>;
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | Array<JsonValue>
+  | { [key: string]: JsonValue };
 
-const __dirname = import.meta.dirname;
+type JsonObject = { [key: string]: JsonValue };
 
-const input = path.join(__dirname, "fixtures", "page.html");
-const output = path.join(__dirname, "outcomes", "page.html.json");
-const local = url.pathToFileURL(input).toString();
+type SiteimproveConfig = {
+  username: string;
+  apiKey: string;
+  baseUrl: string;
+};
+
+type SiteimproveResult = {
+  contentId: string;
+  issues: JsonValue;
+  summary: JsonValue;
+};
+
+type ReportPaths = {
+  csv: string;
+  earlJson: string;
+  siteimproveIssuesJson: string;
+  siteimproveSummaryJson: string;
+};
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+
+const fixturePath = path.join(__dirname, "fixtures", "page.html");
+const local = url.pathToFileURL(fixturePath).toString();
+const siteimprove = getSiteimproveConfig();
 
 const page = process.argv?.[2] ?? local;
 const rules: Array<Rule<any, any, Question.Metadata, any>> = [
@@ -52,26 +82,182 @@ Scraper.with(async (scraper) => {
     logStats(outcomes);
     console.groupEnd();
 
-    const file =
-      url.toString() === local
-        ? output
-        : path.join(
-            __dirname,
-            "outcomes",
-            url.host.getOr(""),
-            ...url.path.filter((segment) => segment !== ""),
-          ) + "--issues.json";
-    const csvFile = file.replace(/\.json$/, ".csv");
+    const reportPaths = getReportPaths(url.toString());
 
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(reportPaths.earlJson), { recursive: true });
 
-    fs.writeFileSync(file, JSON.stringify(earl, null, 2));
+    fs.writeFileSync(reportPaths.earlJson, JSON.stringify(earl, null, 2));
     fs.writeFileSync(
-      csvFile,
+      reportPaths.csv,
       formatCsvReport(url.toString(), earl, elementDescriptions, ruleCriteriaMap, ruleLevelMap),
     );
+
+    if (siteimprove !== null) {
+      const html = await readPageHtml(url.toString());
+
+      if (html === null) {
+        console.warn(`Skipping Siteimprove upload for ${url.toString()}: unable to read HTML content.`);
+      } else {
+        const result = await runSiteimproveAudit(html, siteimprove);
+
+        fs.writeFileSync(reportPaths.siteimproveSummaryJson, JSON.stringify(result.summary, null, 2));
+        fs.writeFileSync(reportPaths.siteimproveIssuesJson, JSON.stringify(result.issues, null, 2));
+
+        console.log(`Siteimprove content check: ${result.contentId}`);
+      }
+    }
   }
 });
+
+function getSiteimproveConfig(): SiteimproveConfig | null {
+  const username = process.env.SITEIMPROVE_USERNAME?.trim() ?? "";
+  const apiKey = process.env.SITEIMPROVE_API_KEY?.trim() ?? "";
+
+  if (username === "" || apiKey === "") {
+    return null;
+  }
+
+  return {
+    username,
+    apiKey,
+    baseUrl: process.env.SITEIMPROVE_API_BASE_URL?.trim() || "https://api.siteimprove.com/v2",
+  };
+}
+
+function getReportPaths(pageUrl: string): ReportPaths {
+  if (pageUrl === local) {
+    const fixtureBase = path.join(__dirname, "outcomes", "page.html");
+
+    return {
+      csv: `${fixtureBase}.csv`,
+      earlJson: `${fixtureBase}.json`,
+      siteimproveIssuesJson: `${fixtureBase}.siteimprove-issues.json`,
+      siteimproveSummaryJson: `${fixtureBase}.siteimprove-summary.json`,
+    };
+  }
+
+  const pageLocation = new URL(pageUrl);
+  const basePath =
+    path.join(
+      __dirname,
+      "outcomes",
+      pageLocation.hostname,
+      ...pageLocation.pathname.split("/").filter((segment) => segment !== ""),
+    ) + "--issues";
+
+  return {
+    csv: `${basePath}.csv`,
+    earlJson: `${basePath}.json`,
+    siteimproveIssuesJson: `${basePath}.siteimprove.json`,
+    siteimproveSummaryJson: `${basePath}.siteimprove-summary.json`,
+  };
+}
+
+async function readPageHtml(pageUrl: string): Promise<string | null> {
+  if (pageUrl === local) {
+    return fs.readFileSync(fixturePath, "utf8");
+  }
+
+  const response = await fetch(pageUrl);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch HTML for Siteimprove upload: ${response.status} ${response.statusText}`);
+  }
+
+  return response.text();
+}
+
+async function runSiteimproveAudit(html: string, config: SiteimproveConfig): Promise<SiteimproveResult> {
+  const uploadResponse = await fetch(`${config.baseUrl}/content/check`, {
+    method: "POST",
+    headers: {
+      Authorization: getSiteimproveAuthorization(config),
+      "Content-Type": "text/html; charset=utf-8",
+    },
+    body: html,
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(
+      `Siteimprove content check upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`,
+    );
+  }
+
+  const uploadPayload = await readJsonBody(uploadResponse);
+  const contentId = getSiteimproveContentId(uploadResponse, uploadPayload);
+
+  return {
+    contentId,
+    issues: await pollSiteimproveJson(`/content/checks/${contentId}/accessibility/issues`, config),
+    summary: await pollSiteimproveJson(`/content/checks/${contentId}/summary`, config),
+  };
+}
+
+function getSiteimproveAuthorization(config: SiteimproveConfig): string {
+  return `Basic ${Buffer.from(`${config.username}:${config.apiKey}`).toString("base64")}`;
+}
+
+async function pollSiteimproveJson(pathname: string, config: SiteimproveConfig): Promise<JsonValue> {
+  let lastError = "Siteimprove result was not ready.";
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const response = await fetch(`${config.baseUrl}${pathname}`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: getSiteimproveAuthorization(config),
+      },
+    });
+
+    if (response.ok) {
+      return readJsonBody(response);
+    }
+
+    lastError = `${response.status} ${response.statusText}`;
+
+    if (response.status !== 404 && response.status !== 409 && response.status !== 425) {
+      break;
+    }
+
+    await delay(Math.min(1000 * (attempt + 1), 4000));
+  }
+
+  throw new Error(`Siteimprove result fetch failed for ${pathname}: ${lastError}`);
+}
+
+async function readJsonBody(response: Response): Promise<JsonValue> {
+  const text = await response.text();
+
+  if (text.trim() === "") {
+    return {};
+  }
+
+  return JSON.parse(text) as JsonValue;
+}
+
+function getSiteimproveContentId(response: Response, payload: JsonValue): string {
+  if (typeof payload === "object" && payload !== null) {
+    const id = (payload as JsonObject).content_id;
+
+    if (typeof id === "string" && id !== "") {
+      return id;
+    }
+  }
+
+  const location = response.headers.get("location") ?? "";
+  const matches = location.match(/\/content\/checks\/([^/?#]+)/);
+
+  if (matches?.[1]) {
+    return matches[1];
+  }
+
+  throw new Error("Siteimprove content check response did not include a content_id.");
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
 
 function formatCsvReport(
   pageUrl: string,
